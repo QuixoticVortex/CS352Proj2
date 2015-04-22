@@ -231,7 +231,8 @@ FILE *sfs_fopen(char *path, char *mode) {
 
 	delete_out_edge(memory, process, resource);
 	add_out_edge(memory, resource, process);
-
+	delete_out_edge(memory, resource, process);
+	add_out_edge(memory, process, resource);
 	// Check for cycles
 
 	// While a cycle exists
