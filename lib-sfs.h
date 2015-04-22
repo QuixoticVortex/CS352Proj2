@@ -26,9 +26,6 @@ typedef struct node_t {
 	// A pointer to a linked list of outgoing edges
 	struct node_t *out_edges;
 
-	// A pointer to a linked list of incoming edges
-	struct node_t *in_edges;
-
 	// If this is a resource and it's currently open, a file pointer
 	FILE *fp;
 

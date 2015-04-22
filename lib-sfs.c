@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <string.h>
 
-#define SHARED_MEM_SIZE 4096 // TODO - Update
+#define SHARED_MEM_SIZE 32768
 
 int segment_id;
 memory_layout *memory;
@@ -60,8 +60,6 @@ pthread_cond_t *get_cycle_cond(memory_layout* mem) {
 
 void reset_node(node *loc) {
 	memset(loc, 0, sizeof(node));
-
-	loc->in_edges = NULL;
 	loc->out_edges = NULL;
 	loc->next = NULL;
 	loc->pid = 0;
@@ -94,7 +92,6 @@ void free_node(memory_layout *mem, node *cur) {
 }
 
 
-// TODO - maybe actually update
 void init_process_node(node *process) {
 	process->pid = getpid();
 }
@@ -110,6 +107,14 @@ node *find_process_node(memory_layout* mem, pid_t pid) {
 node *find_file_node(memory_layout* mem, char *name) {
 	node *cur = mem->resources;
 	while(cur != NULL && strcmp(cur->name, name) != 0) {
+		cur = cur->next;
+	}
+	return cur;
+}
+
+node *find_file_node_fp(memory_layout* mem, FILE *fp) {
+	node *cur = mem->resources;
+	while(cur != NULL && cur->fp != fp) {
 		cur = cur->next;
 	}
 	return cur;
@@ -131,6 +136,7 @@ node *find_or_create_file_node(memory_layout* mem, char *name) {
 
 node *create_process_node(memory_layout *mem) {
 	node *process = create_new_node(mem);
+	init_process_node(process);
 	process->next = mem->processes;
 	mem->processes = process;
 
@@ -173,6 +179,41 @@ int add_out_edge(memory_layout *mem, node *start, node *end) {
 		return 1;
 	}
 	return 0;
+}
+
+int resource_has_incoming_edges(memory_layout *mem, node *given_resource) {
+	node *cur_process = mem->processes;
+	while(cur_process != NULL) {
+		node *cur_ptr = cur_process->out_edges;
+		while(cur_ptr != NULL) {
+			node *cur_resource = cur_ptr->data;
+			if(cur_resource == given_resource) {
+				return 1;
+			}
+			cur_ptr = cur_ptr->next;
+		}
+
+		cur_process = cur_process->next;
+	}
+
+	return 0;
+}
+
+void delete_resource_node(memory_layout *mem, node *given_resource) {
+	node* cur_resource = mem->resources;
+	node* prev_resource = NULL;
+	while(cur_resource != NULL && cur_resource != given_resource) {
+		prev_resource = cur_resource;
+		cur_resource = cur_resource->next;
+	}
+	if(prev_resource != NULL) {
+		prev_resource->next = cur_resource->next;
+	}
+	else {
+		mem->resources = cur_resource->next;
+	}
+
+	free_node(mem, given_resource);
 }
 
 // Public API implementation:
@@ -218,6 +259,64 @@ int sfs_declare(int sys_key, int file_num, char *filenames[]) {
 	return 1;
 }
 
+int cycle_recursive(node *cur) {
+	// For outgoing edges
+	cur->state = VISITED;
+	node *cur_list_node = cur->out_edges;
+	while(cur_list_node != NULL) {
+		node *cur_node = cur_list_node->data;
+		if(cur_node->state == UNVISITED) {
+			// Visit that guy
+			if(cycle_recursive(cur_node)) return 1;
+		}
+		else if(cur_node->state == VISITED) {
+			// CYCLE
+			return 1;
+		}
+		else if(cur_node->state == PROCESSED) {
+			// No need to check
+		}
+
+		cur_list_node = cur_list_node->next;
+	}
+	cur->state = PROCESSED;
+	return 0;
+}
+
+int cycle_exists(memory_layout *mem) {
+	// Initialize nodes' status
+	node *cur = mem->processes;
+	while(cur != NULL) {
+		cur->state = UNVISITED;
+		cur = cur->next;
+	}
+	cur = mem->resources;
+	while(cur != NULL) {
+		cur->state = UNVISITED;
+		cur = cur->next;
+	}
+
+	// Start recursion in a loop or two
+	cur = mem->processes;
+	while(cur != NULL) {
+		if(cur->state == UNVISITED) {
+			if(cycle_recursive(cur)) return 1;
+		}
+
+		cur = cur->next;
+	}
+	cur = mem->resources;
+	while(cur != NULL) {
+		if(cur->state == UNVISITED) {
+			if(cycle_recursive(cur)) return 1;
+		}
+
+		cur = cur->next;
+	}
+
+	return 0;
+}
+
 /**
  *
  */
@@ -227,22 +326,34 @@ FILE *sfs_fopen(char *path, char *mode) {
 	// Turn claim edge to assignment edge
 	node *resource = find_file_node(memory, path);
 	node *process = find_process_node(memory, getpid());
-	if(resource == NULL || process == NULL) return NULL;
+	if(resource == NULL || process == NULL) {
+		mutex_unlock(memory);
+		return NULL;
+	}
 
 	delete_out_edge(memory, process, resource);
 	add_out_edge(memory, resource, process);
-	delete_out_edge(memory, resource, process);
-	add_out_edge(memory, process, resource);
-	// Check for cycles
 
 	// While a cycle exists
+	while(cycle_exists(memory)) {
 		// Convert back to claim edge
-		// Wait
-	// Upon getting the lock, open the file
+		delete_out_edge(memory, resource, process);
+		add_out_edge(memory, process, resource);
 
+		// Wait
+		pthread_cond_wait(get_cycle_cond(memory), get_lock(memory));
+
+		// Add edge back
+		delete_out_edge(memory, process, resource);
+		add_out_edge(memory, resource, process);
+	}
+
+	// Upon getting the lock and assuring no cycle, open the file
+	FILE *res = fopen(path, mode);
+	resource->fp = res;
 	mutex_unlock(memory);
 
-	return NULL;
+	return res;
 }
 
 /**
@@ -252,32 +363,95 @@ int sfs_fclose(FILE *fp) {
 	mutex_lock(memory);
 
 	// Find this process and file resource
+	node *resource = find_file_node_fp(memory, fp);
+	node *process = find_process_node(memory, getpid());
+	if(resource == NULL || process == NULL) {
+		mutex_unlock(memory);
+		return 0;
+	}
+	resource->fp = NULL;
+
 	// Convert back to claim edge
+	delete_out_edge(memory, resource, process);
+	add_out_edge(memory, process, resource);
+
+	// Close file
+	int result = fclose(fp);
 
 	// Broadcast conditional variable
+	pthread_cond_broadcast(get_cycle_cond(memory));
 
 	mutex_unlock(memory);
-	return 1;
+	return !result;
 }
 
 
 /**
  *
  */
-// TODO - why does this argument even exist?
 int sfs_leave(int sys_key) {
 	mutex_lock(memory);
-	// Update the shared memory stuff.
-	// Loop through this process's files and delete ones with no other users (remember to close if open)
-	// Remove this process's process node
 
-	// Update the local stuff.
+	// Loop through our open files and close them
+	// Remove this process from overall list
+	node* cur_process = memory->processes;
+	node* prev_process = NULL;
+	while(cur_process != NULL && cur_process->pid != getpid()) {
+		prev_process = cur_process;
+		cur_process = cur_process->next;
+	}
+
+	if(prev_process != NULL) prev_process->next = cur_process->next;
+	else memory->processes = cur_process->next;
+
+	// For each resource
+	node *cur_resource = memory->resources;
+	while(cur_resource != NULL) {
+		// For each outgoing edge
+		// If we are the target
+		if(cur_resource->out_edges != NULL && cur_resource->out_edges->data == cur_process) {
+			// Close file and flip edge
+			delete_out_edge(memory, cur_resource, cur_process);
+			add_out_edge(memory, cur_process, cur_resource);
+
+			// Close file
+			fclose(cur_resource->fp);
+		}
+		cur_resource = cur_resource->next;
+	}
+
+
+
+	// Loop through this process's files and delete ones with no other users
+	// For each outgoing edge
+	node *cur_resource_list = cur_process->out_edges;
+	while(cur_resource_list != NULL) {
+		cur_resource = cur_resource_list->data;
+
+		// If has an outgoing edge to someone else, go on
+		if(cur_resource->out_edges == NULL) {
+			// Otherwise, loop through all processes and search for outgoing edges to resource
+			// If none are found, remove this resource
+			if(!resource_has_incoming_edges(memory, cur_resource)) {
+				// delete this node (remove from resource list and free it)
+				delete_resource_node(memory, cur_resource);
+			}
+		}
+
+		cur_resource_list = cur_resource_list->next;
+	}
+
+	// Remove this process's process node
+	free_node(memory, cur_process);
 
 	// Broadcast conditional variable
+	pthread_cond_broadcast(get_cycle_cond(memory));
 
 	mutex_unlock(memory);
+
 	shmdt(shared_memory);
 
+	// Update local stuff
 	memory = NULL;
 	shared_memory = NULL;
 	segment_id = -1;
@@ -288,7 +462,18 @@ int sfs_leave(int sys_key) {
  *
  */
 int sfs_destroy(int sys_key) {
-	shmctl(get_segment_id(sys_key), IPC_RMID, NULL); //remove the shared memory block
+	// Close leftover files
+	// For each resource, if it has outgoing edges, close that file
+	node *cur_resource = memory->resources;
+	while(cur_resource != NULL) {
+		// For each outgoing edge
+		if(cur_resource->out_edges != NULL) {
+			// Close file
+			fclose(cur_resource->fp);
+		}
+	}
+
+	shmctl(get_segment_id(sys_key), IPC_RMID, NULL); // Remove the shared memory block forever
 	return 1;
 }
 

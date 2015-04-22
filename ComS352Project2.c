@@ -3,7 +3,7 @@
 
 #include "lib-sfs.h"
 
-#define SYS_KEY 8765
+#define SYS_KEY 8766
 
 char *fn1[5]= {"f1", "f2", "f3", "f4", "f5"};
 char *fn2[5]= {"f5", "f4", "f3", "f2", "f1"};
@@ -34,7 +34,7 @@ void proc_code(int num_file , char **filename)
 int main()
 {
 	printf("compiled\n");
-	return 0;
+
 	int sid ;
 	setbuf(stdout,NULL);
 	sid = sfs_init(SYS_KEY);
