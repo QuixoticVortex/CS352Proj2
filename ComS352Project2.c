@@ -3,11 +3,11 @@
 
 #include "lib-sfs.h"
 
-#define SYS_KEY 8766
+#define SYS_KEY 8768
 
-char *fn1[5]= {"f1", "f2", "f3", "f4", "f5"};
-char *fn2[5]= {"f5", "f4", "f3", "f2", "f1"};
-char *fn3[5]={"f4", "f2", "f3", "f1", "f5"};
+char *fn1[5] = {"f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt"};
+char *fn2[5] = {"f5.txt", "f4.txt", "f3.txt", "f2.txt", "f1.txt"};
+char *fn3[5] = {"f4.txt", "f2.txt", "f3.txt", "f1.txt", "f5.txt"};
 
 void proc_code(int num_file , char **filename)
 {
@@ -19,7 +19,7 @@ void proc_code(int num_file , char **filename)
 	printf ("Process %d: has called sfs_declare \n", getpid ());
 	for (i = 0; i < num_file; i++) {
 		printf ("Process %d: to open file %s\n", getpid(),filename[ i ]);
-		fp[ i]=sfs_fopen(filename[ i ],"r");
+		fp[ i] = sfs_fopen(filename[ i ],"r");
 		printf ("Process %d: has opened file %s\n", getpid(),filename[ i ]);
 		sleep (1);
 	}
@@ -28,7 +28,9 @@ void proc_code(int num_file , char **filename)
 		sfs_fclose (fp[ i ]);
 		printf ("Process %d: has closed file %s\n", getpid(),filename[ i ]);
 	}
+	printf ("Process %d: trying to leave\n", getpid());
 	sfs_leave(SYS_KEY);
+	printf ("Process %d: left\n", getpid());
 }
 
 int main()
@@ -51,5 +53,7 @@ int main()
 	}
 	wait(NULL);
 	wait(NULL);
+	printf ("Process %d: trying to destroy\n", getpid());
 	sfs_destroy (sid );
+	printf ("Process %d: destroyed\n", getpid());
 }

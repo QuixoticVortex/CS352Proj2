@@ -216,49 +216,6 @@ void delete_resource_node(memory_layout *mem, node *given_resource) {
 	free_node(mem, given_resource);
 }
 
-// Public API implementation:
-/**
- * Called once to initialize the shared memory data structures for this library.
- */
-int sfs_init(int sys_key) {
-	// Initialize shared memory
-	int id = get_segment_id(sys_key);
-	char *shared_mem = (char *) shmat(id, NULL, 0);
-	shared_mem_init(shared_mem);
-	shmdt(shared_mem);
-
-	return 1;
-}
-
-/**
- * Called by each process to declare the files it will be accessing. Also initializes process specific data.
- */
-int sfs_declare(int sys_key, int file_num, char *filenames[]) {
-	// Initialize shared memory pointers
-	segment_id = get_segment_id(sys_key);
-	shared_memory = (char *) shmat(segment_id, NULL, 0);
-	memory = (memory_layout *) shared_memory;
-
-	mutex_lock(memory);
-
-	// Create process node for this process
-	node *process = create_process_node(memory);
-
-	// Create or get resource nodes for all files
-	int i;
-	for(i = 0; i < file_num; i++) {
-		char *name = filenames[i];
-		node *resource = find_or_create_file_node(memory, name);
-
-		// Record that this process has claim edges to the given files
-		create_list_node(memory, resource, &process->out_edges);
-	}
-
-	mutex_unlock(memory);
-
-	return 1;
-}
-
 int cycle_recursive(node *cur) {
 	// For outgoing edges
 	cur->state = VISITED;
@@ -317,6 +274,51 @@ int cycle_exists(memory_layout *mem) {
 	return 0;
 }
 
+// Public API implementation:
+/**
+ * Called once to initialize the shared memory data structures for this library.
+ */
+int sfs_init(int sys_key) {
+	// Initialize shared memory
+	int id = get_segment_id(sys_key);
+	char *shared_mem = (char *) shmat(id, NULL, 0);
+	shared_mem_init(shared_mem);
+	shmdt(shared_mem);
+
+	return 1;
+}
+
+/**
+ * Called by each process to declare the files it will be accessing. Also initializes process specific data.
+ */
+int sfs_declare(int sys_key, int file_num, char *filenames[]) {
+	// Initialize shared memory pointers
+	segment_id = get_segment_id(sys_key);
+	shared_memory = (char *) shmat(segment_id, NULL, 0);
+	memory = (memory_layout *) shared_memory;
+
+	mutex_lock(memory);
+
+	// Create process node for this process
+	node *process = create_process_node(memory);
+
+	// Create or get resource nodes for all files
+	int i;
+	for(i = 0; i < file_num; i++) {
+		char *name = filenames[i];
+		node *resource = find_or_create_file_node(memory, name);
+
+		// Record that this process has claim edges to the given files
+		create_list_node(memory, resource, &process->out_edges);
+	}
+
+	mutex_unlock(memory);
+
+	return 1;
+}
+
+
+
 /**
  *
  */
@@ -361,7 +363,6 @@ FILE *sfs_fopen(char *path, char *mode) {
  */
 int sfs_fclose(FILE *fp) {
 	mutex_lock(memory);
-
 	// Find this process and file resource
 	node *resource = find_file_node_fp(memory, fp);
 	node *process = find_process_node(memory, getpid());
@@ -369,15 +370,13 @@ int sfs_fclose(FILE *fp) {
 		mutex_unlock(memory);
 		return 0;
 	}
-	resource->fp = NULL;
+	//resource->fp = NULL;
 
 	// Convert back to claim edge
 	delete_out_edge(memory, resource, process);
 	add_out_edge(memory, process, resource);
-
 	// Close file
 	int result = fclose(fp);
-
 	// Broadcast conditional variable
 	pthread_cond_broadcast(get_cycle_cond(memory));
 
@@ -390,7 +389,7 @@ int sfs_fclose(FILE *fp) {
  *
  */
 int sfs_leave(int sys_key) {
-	mutex_lock(memory);
+	mutex_lock (memory);
 
 	// Loop through our open files and close them
 	// Remove this process from overall list
@@ -464,6 +463,10 @@ int sfs_leave(int sys_key) {
 int sfs_destroy(int sys_key) {
 	// Close leftover files
 	// For each resource, if it has outgoing edges, close that file
+	segment_id = get_segment_id(sys_key);
+	shared_memory = (char *) shmat(segment_id, NULL, 0);
+	memory = (memory_layout *) shared_memory;
+
 	node *cur_resource = memory->resources;
 	while(cur_resource != NULL) {
 		// For each outgoing edge
@@ -473,7 +476,8 @@ int sfs_destroy(int sys_key) {
 		}
 	}
 
-	shmctl(get_segment_id(sys_key), IPC_RMID, NULL); // Remove the shared memory block forever
+	shmdt(shared_memory);
+	shmctl(segment_id, IPC_RMID, NULL); // Remove the shared memory block forever
 	return 1;
 }
 
