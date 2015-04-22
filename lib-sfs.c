@@ -87,6 +87,12 @@ node *create_new_node(memory_layout* mem) {
 	return loc;
 }
 
+void free_node(memory_layout *mem, node *cur) {
+	reset_node(cur);
+	cur->next = mem->open_nodes;
+	mem->open_nodes = cur;
+}
+
 
 // TODO - maybe actually update
 void init_process_node(node *process) {
@@ -139,6 +145,35 @@ node *create_list_node(memory_layout *mem, node *data, node **head) {
 	return cur;
 }
 
+int delete_out_edge(memory_layout *mem, node *start, node *end) {
+	node *cur = start->out_edges;
+	node *prev = NULL;
+
+	while(cur != NULL && cur->data != end) {
+		prev = cur;
+		cur = cur->next;
+	}
+
+	if(cur == NULL) return 1;
+
+	if(prev == NULL) {
+		start->out_edges = cur->next;
+	}
+	else {
+		prev->next = cur->next;
+	}
+
+	free_node(mem, cur);
+
+	return 1;
+}
+
+int add_out_edge(memory_layout *mem, node *start, node *end) {
+	if(create_list_node(mem, end, &start->out_edges) != NULL) {
+		return 1;
+	}
+	return 0;
+}
 
 // Public API implementation:
 /**
@@ -194,8 +229,8 @@ FILE *sfs_fopen(char *path, char *mode) {
 	node *process = find_process_node(memory, getpid());
 	if(resource == NULL || process == NULL) return NULL;
 
-	delete_out_edge(process, resource);
-	add_out_edge(resource, process);
+	delete_out_edge(memory, process, resource);
+	add_out_edge(memory, resource, process);
 
 	// Check for cycles
 
