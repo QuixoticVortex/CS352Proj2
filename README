@@ -1,0 +1,16 @@
+How to compile and run: 
+	:> make clean
+	:> make
+	:> ./main
+
+	* ensure that the files f1.txt ... f5.txt are present in the current folder before running.
+
+Implementation Notes:
+
+Synchronization and process suspension:
+	I chose to use pthread mutex for ensuring mutual exclusion in all methods and the pthread conditional variables for waiting on cycles to go away. Basically, if turning a request edge into an assignment edge results in a cycle, we turn it back to a request edge and wait on the condition variable inside a loop checking for cycles. When something signals that condition variable, we check again to see if the cycle gone away. If not, we wait again. 
+
+	Any method which might remove a cycle broadcasts on the condition variable so all waiting processes are unblocked and can try again. 
+
+Memory management: 
+	The beginning of the shared memory segment contains a struct memory_layout. This contains the main shared variables and pointers to resources and processes. All resource, process, and edge nodes use the same data structure (node) to store their data. All shared memory other than the initial structure is packed full of node structures. When we are done using a node structure, we add it to a list of free nodes and use it next time we need a new one. This is a fairly efficient system which should use memory optimially (except all the wasted space inside each node structure).
