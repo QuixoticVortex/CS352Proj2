@@ -22,7 +22,9 @@ int get_segment_id(int sys_key) {
 	return id;
 }
 
-// Shared memory manager:
+/**
+ * Initialize the memory with our memory_layout struct at the very beginning
+ */
 memory_layout *shared_mem_init(char* mem_base) {
 	memset(mem_base, 0, sizeof(memory_layout));
 	memory_layout *layout = (memory_layout *) mem_base;
@@ -42,22 +44,37 @@ memory_layout *shared_mem_init(char* mem_base) {
 	return layout;
 }
 
+/**
+ * Get the lock all processes should use
+ */
 pthread_mutex_t *get_lock(memory_layout* mem) {
 	return &mem->mutex;
 }
 
+/**
+ * Acquire the lock
+ */
 void mutex_lock(memory_layout* mem) {
 	pthread_mutex_lock(get_lock(mem));
 }
 
+/**
+ * Release the lock
+ */
 void mutex_unlock(memory_layout* mem) {
 	pthread_mutex_unlock(get_lock(mem));
 }
 
+/**
+ * Get the condition variable that all processes waiting to open a file which would result in a cycle should wait on
+ */
 pthread_cond_t *get_cycle_cond(memory_layout* mem) {
 	return &mem->no_cycle;
 }
 
+/**
+ * Reset the fields of the given node object
+ */
 void reset_node(node *loc) {
 	memset(loc, 0, sizeof(node));
 	loc->out_edges = NULL;
@@ -68,6 +85,12 @@ void reset_node(node *loc) {
 	loc->fp = NULL;
 }
 
+/**
+ * Allocate a new node in the shared memory segment
+ *
+ * Implementation: look to see if we can re-use any old node objects.
+ * If not, allocate at location pointed to by mem->next_free and increment it accordingly
+ */
 node *create_new_node(memory_layout* mem) {
 	node *loc = NULL;
 
@@ -78,6 +101,9 @@ node *create_new_node(memory_layout* mem) {
 	else {
 		loc = (node *) mem->next_free;
 		mem->next_free += sizeof(node);
+		if(mem->next_free > shared_memory + SHARED_MEM_SIZE) {
+			return NULL;
+		}
 	}
 
 	reset_node(loc);
@@ -85,17 +111,25 @@ node *create_new_node(memory_layout* mem) {
 	return loc;
 }
 
+/**
+ * "Free" the given node, or reset it and add it to the list of available nodes.
+ */
 void free_node(memory_layout *mem, node *cur) {
 	reset_node(cur);
 	cur->next = mem->open_nodes;
 	mem->open_nodes = cur;
 }
 
-
+/**
+ * Initialize the given node to be a process node belonging to this process
+ */
 void init_process_node(node *process) {
 	process->pid = getpid();
 }
 
+/**
+ * Find the process node with the given pid
+ */
 node *find_process_node(memory_layout* mem, pid_t pid) {
 	node *cur = mem->processes;
 	while(cur != NULL && cur->pid != pid) {
@@ -104,6 +138,9 @@ node *find_process_node(memory_layout* mem, pid_t pid) {
 	return cur;
 }
 
+/**
+ * Find the file node with the given name
+ */
 node *find_file_node(memory_layout* mem, char *name) {
 	node *cur = mem->resources;
 	while(cur != NULL && strcmp(cur->name, name) != 0) {
@@ -112,6 +149,9 @@ node *find_file_node(memory_layout* mem, char *name) {
 	return cur;
 }
 
+/**
+ * Find the file node with the given file pointer
+ */
 node *find_file_node_fp(memory_layout* mem, FILE *fp) {
 	node *cur = mem->resources;
 	while(cur != NULL && cur->fp != fp) {
@@ -120,11 +160,16 @@ node *find_file_node_fp(memory_layout* mem, FILE *fp) {
 	return cur;
 }
 
+/**
+ * If a file node with the given name exists, return it
+ * Else create a new one with the given name, add it to the list, and return it
+ */
 node *find_or_create_file_node(memory_layout* mem, char *name) {
 	node *cur = find_file_node(mem, name);
 
 	if(cur == NULL) {
 		cur = create_new_node(mem);
+		if(cur == NULL) return NULL;
 		cur->fp = NULL;
 		strncpy(cur->name, name, sizeof(cur->name));
 		cur->next = mem->resources;
@@ -134,8 +179,12 @@ node *find_or_create_file_node(memory_layout* mem, char *name) {
 	return cur;
 }
 
+/**
+ * Create a new node for the calling process and add it to the list.
+ */
 node *create_process_node(memory_layout *mem) {
 	node *process = create_new_node(mem);
+	if(process == NULL) return NULL;
 	init_process_node(process);
 	process->next = mem->processes;
 	mem->processes = process;
@@ -143,14 +192,21 @@ node *create_process_node(memory_layout *mem) {
 	return process;
 }
 
+/**
+ * Create a linked list node pointing to the data object from the head list
+ */
 node *create_list_node(memory_layout *mem, node *data, node **head) {
 	node *cur = create_new_node(mem);
+	if(cur == NULL) return NULL;
 	cur->next = *head;
 	*head = cur;
 	cur->data = data;
 	return cur;
 }
 
+/**
+ * Delete the edge from the given start node to the given end node (processes or resources)
+ */
 int delete_out_edge(memory_layout *mem, node *start, node *end) {
 	node *cur = start->out_edges;
 	node *prev = NULL;
@@ -174,6 +230,9 @@ int delete_out_edge(memory_layout *mem, node *start, node *end) {
 	return 1;
 }
 
+/**
+ * Add an outgoing edge from the start node to the end node (process or resource)
+ */
 int add_out_edge(memory_layout *mem, node *start, node *end) {
 	if(create_list_node(mem, end, &start->out_edges) != NULL) {
 		return 1;
@@ -181,6 +240,9 @@ int add_out_edge(memory_layout *mem, node *start, node *end) {
 	return 0;
 }
 
+/**
+ * Return 1 if the given resource has any incoming edges from any processes, 0 otherwise
+ */
 int resource_has_incoming_edges(memory_layout *mem, node *given_resource) {
 	node *cur_process = mem->processes;
 	while(cur_process != NULL) {
@@ -199,6 +261,9 @@ int resource_has_incoming_edges(memory_layout *mem, node *given_resource) {
 	return 0;
 }
 
+/**
+ * Delete the current resource by removing it from the list and freeing it.
+ */
 void delete_resource_node(memory_layout *mem, node *given_resource) {
 	node* cur_resource = mem->resources;
 	node* prev_resource = NULL;
@@ -216,6 +281,10 @@ void delete_resource_node(memory_layout *mem, node *given_resource) {
 	free_node(mem, given_resource);
 }
 
+
+/**
+ * Depth first search from the given node to all outgoing edges. Returns 1 if there is a cycle in this subgraph, 0 otherwise
+ */
 int cycle_recursive(node *cur) {
 	// For outgoing edges
 	cur->state = VISITED;
@@ -240,6 +309,9 @@ int cycle_recursive(node *cur) {
 	return 0;
 }
 
+/**
+ * Search for a cycle in the resource allocation graph. Return 1 if so, 0 otherwise
+ */
 int cycle_exists(memory_layout *mem) {
 	// Initialize nodes' status
 	node *cur = mem->processes;
@@ -277,39 +349,59 @@ int cycle_exists(memory_layout *mem) {
 // Public API implementation:
 /**
  * Called once to initialize the shared memory data structures for this library.
+ *
+ * Parameters: 	sys_key - The ID of the shared memory segment all participating processes should use.
+ * Returns: 1 on success, 0 otherwise
  */
 int sfs_init(int sys_key) {
 	// Initialize shared memory
 	int id = get_segment_id(sys_key);
+	if(id == -1) return 0;
+
 	char *shared_mem = (char *) shmat(id, NULL, 0);
+	if(shared_mem == (void *)-1) return 0;
+
 	shared_mem_init(shared_mem);
-	shmdt(shared_mem);
+
+	int result = shmdt(shared_mem);
+	if(result == -1) return 0;
 
 	return 1;
 }
 
 /**
- * Called by each process to declare the files it will be accessing. Also initializes process specific data.
+ * Declares the shared memory segment this process will be using and the files it will ever possibly open. This must be called before sfs_fopen().
+ *
+ * Parameters: 	sys_key - The ID of the shared memory segment initialized in sfs_init.
+ * 				file_num - The number of files this process might open (or size of filenames)
+ * 				filenames - The names of the files this process wishes to open (in the future).
+ * Returns: 1 on success, 0 otherwise
  */
 int sfs_declare(int sys_key, int file_num, char *filenames[]) {
 	// Initialize shared memory pointers
 	segment_id = get_segment_id(sys_key);
+	if(segment_id == -1) return 0;
+
 	shared_memory = (char *) shmat(segment_id, NULL, 0);
+	if(shared_memory == (void *)-1) return 0;
+
 	memory = (memory_layout *) shared_memory;
 
 	mutex_lock(memory);
 
 	// Create process node for this process
 	node *process = create_process_node(memory);
+	if(process == NULL) return 0;
 
 	// Create or get resource nodes for all files
 	int i;
 	for(i = 0; i < file_num; i++) {
 		char *name = filenames[i];
 		node *resource = find_or_create_file_node(memory, name);
-
+		if(resource == NULL) return 0;
 		// Record that this process has claim edges to the given files
-		create_list_node(memory, resource, &process->out_edges);
+		node *list_node_cur = create_list_node(memory, resource, &process->out_edges);
+		if(list_node_cur == NULL) return 0;
 	}
 
 	mutex_unlock(memory);
@@ -320,7 +412,13 @@ int sfs_declare(int sys_key, int file_num, char *filenames[]) {
 
 
 /**
+ * Open and lock the given file, ensuring that no deadlock will occur now or in the future over contention for this file.
+ * If opening this file immediately would cause a deadlock, this method will block until the file can be safely opened and locked.
+ * If the file cannot be opened, NULL is returned.
  *
+ * Parameters: 	path - path to the file you wish to open and lock
+ *  			mode - mode in which to open the file (same as the argument to fopen())
+ * Returns: A file pointer to the opened file or NULL on error
  */
 FILE *sfs_fopen(char *path, char *mode) {
 	mutex_lock(memory);
@@ -359,7 +457,10 @@ FILE *sfs_fopen(char *path, char *mode) {
 }
 
 /**
+ * Close and unlock a file which was previously opened and locked using sfs_fopen.
  *
+ * Parameters: fp - file pointer to the file which you wish to close
+ * Returns: 1 on success, 0 otherwise
  */
 int sfs_fclose(FILE *fp) {
 	mutex_lock(memory);
@@ -370,7 +471,7 @@ int sfs_fclose(FILE *fp) {
 		mutex_unlock(memory);
 		return 0;
 	}
-	//resource->fp = NULL;
+	resource->fp = NULL;
 
 	// Convert back to claim edge
 	delete_out_edge(memory, resource, process);
@@ -381,17 +482,22 @@ int sfs_fclose(FILE *fp) {
 	pthread_cond_broadcast(get_cycle_cond(memory));
 
 	mutex_unlock(memory);
-	return !result;
+	return (result != EOF);
 }
 
 
 /**
+ * End this process's access to the shared files. All files opened by this process are closed and unlocked,
+ * this process is removed from the system, and the shared memory segment is detached.
  *
+ * If the current process wishes to use this library any further (except calling sfs_destroy), it must re-call sfs_declare().
+ *
+ * Parameters: sys_key - the unique ID of the shared memory segment used in sfs_init and sfs_declare
+ * Returns: 1 on success, 0 otherwise
  */
 int sfs_leave(int sys_key) {
 	mutex_lock (memory);
 
-	// Loop through our open files and close them
 	// Remove this process from overall list
 	node* cur_process = memory->processes;
 	node* prev_process = NULL;
@@ -400,21 +506,23 @@ int sfs_leave(int sys_key) {
 		cur_process = cur_process->next;
 	}
 
+	// Remove the process
 	if(prev_process != NULL) prev_process->next = cur_process->next;
 	else memory->processes = cur_process->next;
 
+	// Loop through our open files and close them
 	// For each resource
 	node *cur_resource = memory->resources;
 	while(cur_resource != NULL) {
-		// For each outgoing edge
-		// If we are the target
+		// If we are the target of this resource's outgoing edge
 		if(cur_resource->out_edges != NULL && cur_resource->out_edges->data == cur_process) {
-			// Close file and flip edge
+			// Close file and flip edge back
 			delete_out_edge(memory, cur_resource, cur_process);
 			add_out_edge(memory, cur_process, cur_resource);
 
 			// Close file
-			fclose(cur_resource->fp);
+			int result = fclose(cur_resource->fp);
+			if(result == EOF) return 0;
 		}
 		cur_resource = cur_resource->next;
 	}
@@ -448,36 +556,54 @@ int sfs_leave(int sys_key) {
 
 	mutex_unlock(memory);
 
-	shmdt(shared_memory);
+	int result = shmdt(shared_memory);
 
 	// Update local stuff
 	memory = NULL;
 	shared_memory = NULL;
 	segment_id = -1;
+
+	if(result == -1) return 0;
 	return 1;
 }
 
 /**
+ * Close any open files and destroy the shared memory segment. This must be the last method of this library called.
  *
+ * Parameters: sys_key - the unique ID of the shared memory segment used in sfs_init and sfs_declare
+ * Returns: 1 on success, 0 otherwise
  */
 int sfs_destroy(int sys_key) {
-	// Close leftover files
-	// For each resource, if it has outgoing edges, close that file
+	// Reattach to shared memory
 	segment_id = get_segment_id(sys_key);
+	if(segment_id == -1) return 0;
+
 	shared_memory = (char *) shmat(segment_id, NULL, 0);
+	if(shared_memory == (void *)-1) return 0;
+
 	memory = (memory_layout *) shared_memory;
 
+
+	// Close leftover files
+
+	// For each resource, if it has outgoing edges, close that file
 	node *cur_resource = memory->resources;
 	while(cur_resource != NULL) {
 		// For each outgoing edge
 		if(cur_resource->out_edges != NULL) {
 			// Close file
-			fclose(cur_resource->fp);
+			int result = fclose(cur_resource->fp);
+			if(result == EOF) return 0;
 		}
 	}
 
-	shmdt(shared_memory);
-	shmctl(segment_id, IPC_RMID, NULL); // Remove the shared memory block forever
+	// Detach and destroy shared memory segment
+	int result = shmdt(shared_memory);
+	if(result == -1) return 0;
+
+	result = shmctl(segment_id, IPC_RMID, NULL); // Remove the shared memory block forever
+	if(result == -1) return 0;
+
 	return 1;
 }
 

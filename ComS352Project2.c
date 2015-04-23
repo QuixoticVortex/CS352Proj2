@@ -28,9 +28,7 @@ void proc_code(int num_file , char **filename)
 		sfs_fclose (fp[ i ]);
 		printf ("Process %d: has closed file %s\n", getpid(),filename[ i ]);
 	}
-	printf ("Process %d: trying to leave\n", getpid());
 	sfs_leave(SYS_KEY);
-	printf ("Process %d: left\n", getpid());
 }
 
 int main()
@@ -46,14 +44,12 @@ int main()
 	} else {
 		if (fork()==0) {
 			proc_code(5,fn2);
-		exit (0);
+			exit (0);
 		} else {
 			proc_code(5,fn3);
 		}
 	}
 	wait(NULL);
 	wait(NULL);
-	printf ("Process %d: trying to destroy\n", getpid());
 	sfs_destroy (sid );
-	printf ("Process %d: destroyed\n", getpid());
 }
