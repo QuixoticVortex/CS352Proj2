@@ -3,7 +3,7 @@
 
 #include "lib-sfs.h"
 
-#define SYS_KEY 8768
+#define SYS_KEY 8777
 
 char *fn1[5] = {"f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt"};
 char *fn2[5] = {"f5.txt", "f4.txt", "f3.txt", "f2.txt", "f1.txt"};

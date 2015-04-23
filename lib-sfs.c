@@ -391,17 +391,26 @@ int sfs_declare(int sys_key, int file_num, char *filenames[]) {
 
 	// Create process node for this process
 	node *process = create_process_node(memory);
-	if(process == NULL) return 0;
+	if(process == NULL) {
+		mutex_unlock(memory);
+		return 0;
+	}
 
 	// Create or get resource nodes for all files
 	int i;
 	for(i = 0; i < file_num; i++) {
 		char *name = filenames[i];
 		node *resource = find_or_create_file_node(memory, name);
-		if(resource == NULL) return 0;
+		if(resource == NULL) {
+			mutex_unlock(memory);
+			return 0;
+		}
 		// Record that this process has claim edges to the given files
 		node *list_node_cur = create_list_node(memory, resource, &process->out_edges);
-		if(list_node_cur == NULL) return 0;
+		if(list_node_cur == NULL) {
+			mutex_unlock(memory);
+			return 0;
+		}
 	}
 
 	mutex_unlock(memory);
@@ -426,7 +435,7 @@ FILE *sfs_fopen(char *path, char *mode) {
 	// Turn claim edge to assignment edge
 	node *resource = find_file_node(memory, path);
 	node *process = find_process_node(memory, getpid());
-	if(resource == NULL || process == NULL) {
+	if(resource == NULL || process == NULL) {\
 		mutex_unlock(memory);
 		return NULL;
 	}
@@ -463,25 +472,32 @@ FILE *sfs_fopen(char *path, char *mode) {
  * Returns: 1 on success, 0 otherwise
  */
 int sfs_fclose(FILE *fp) {
+	if(fp == NULL) return 0;
 	mutex_lock(memory);
+
 	// Find this process and file resource
 	node *resource = find_file_node_fp(memory, fp);
 	node *process = find_process_node(memory, getpid());
+
 	if(resource == NULL || process == NULL) {
 		mutex_unlock(memory);
 		return 0;
 	}
+
 	resource->fp = NULL;
 
 	// Convert back to claim edge
 	delete_out_edge(memory, resource, process);
 	add_out_edge(memory, process, resource);
+
 	// Close file
 	int result = fclose(fp);
+
 	// Broadcast conditional variable
 	pthread_cond_broadcast(get_cycle_cond(memory));
 
 	mutex_unlock(memory);
+
 	return (result != EOF);
 }
 
@@ -522,7 +538,10 @@ int sfs_leave(int sys_key) {
 
 			// Close file
 			int result = fclose(cur_resource->fp);
-			if(result == EOF) return 0;
+			if(result == EOF) {
+				mutex_unlock(memory);
+				return 0;
+			}
 		}
 		cur_resource = cur_resource->next;
 	}
